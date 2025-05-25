@@ -1,0 +1,287 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import nltk
+from nltk.sentiment import SentimentIntensityAnalyzer
+import re
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+import logging
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(_name_)
+
+# Initialize Flask app
+app = Flask(_name_)
+# Configure CORS correctly
+CORS(app, resources={r"/": {"origins": ""}}, supports_credentials=True)
+
+logger.info("Starting Flask application...")
+
+# Download required NLTK data
+try:
+    for resource in ['vader_lexicon', 'punkt', 'stopwords', 'wordnet']:
+        try:
+            nltk.data.find(f'tokenizers/{resource}')
+            logger.info(f"NLTK resource '{resource}' already downloaded")
+        except LookupError:
+            logger.info(f"Downloading NLTK resource '{resource}'")
+            nltk.download(resource, quiet=True)
+except Exception as e:
+    logger.error(f"Error with NLTK resources: {str(e)}")
+    # Continue anyway, we'll handle missing resources in the analysis functions
+
+# Initialize sentiment analyzer
+try:
+    sia = SentimentIntensityAnalyzer()
+    logger.info("SentimentIntensityAnalyzer initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing SentimentIntensityAnalyzer: {str(e)}")
+    raise  # This is critical, so we'll let the app fail if this fails
+
+# Initialize lemmatizer
+lemmatizer = WordNetLemmatizer()
+
+# Load education technology specific keywords
+edtech_keywords = {
+    'positive': [
+        'interactive', 'engaging', 'helpful', 'intuitive', 'efficient', 
+        'accessible', 'innovative', 'user-friendly', 'effective', 'clear',
+        'practical', 'convenient', 'adaptive', 'motivating', 'comprehensive'
+    ],
+    'negative': [
+        'confusing', 'complicated', 'difficult', 'buggy', 'slow', 
+        'frustrating', 'expensive', 'limited', 'outdated', 'unreliable',
+        'distracting', 'overwhelming', 'glitchy', 'restrictive', 'incompatible'
+    ],
+    'neutral': [
+        'basic', 'standard', 'average', 'typical', 'simple',
+        'common', 'conventional', 'regular', 'medium', 'moderate'
+    ]
+}
+
+# Education domains
+education_domains = [
+    'lms', 'learning management', 'course', 'module', 'lecture', 'classroom',
+    'assessment', 'quiz', 'test', 'exam', 'assignment', 'homework',
+    'student', 'teacher', 'instructor', 'professor', 'education', 'learning',
+    'teaching', 'study', 'curriculum', 'syllabus', 'academic', 'school',
+    'university', 'college', 'training', 'e-learning', 'online learning',
+    'virtual classroom', 'interactive', 'gamification', 'simulation',
+    'tutorial', 'video lecture', 'webinar', 'mooc', 'adaptive learning'
+]
+
+# Function to preprocess text
+def preprocess_text(text):
+    if not text or not isinstance(text, str):
+        logger.warning(f"Invalid text input for preprocessing")
+        return ""
+        
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Remove special characters and numbers
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    
+    # Tokenize text
+    try:
+        tokens = word_tokenize(text)
+    except Exception as e:
+        logger.warning(f"Error tokenizing text: {str(e)}")
+        tokens = text.split()
+    
+    # Remove stopwords
+    try:
+        stop_words = set(stopwords.words('english'))
+        tokens = [word for word in tokens if word not in stop_words]
+    except Exception as e:
+        logger.warning(f"Error removing stopwords: {str(e)}")
+    
+    # Lemmatize words
+    try:
+        tokens = [lemmatizer.lemmatize(word) for word in tokens]
+    except Exception as e:
+        logger.warning(f"Error during lemmatization: {str(e)}")
+    
+    # Join tokens back into text
+    processed_text = ' '.join(tokens)
+    
+    return processed_text
+
+# Function to check if text is related to educational technology
+def is_edtech_related(text):
+    if not text or not isinstance(text, str):
+        return False
+        
+    text_lower = text.lower()
+    
+    # Check if any educational domain terms are in the text
+    for domain in education_domains:
+        if domain in text_lower:
+            return True
+    
+    # If no explicit domains found, check for technology terms in educational context
+    tech_terms = ['app', 'platform', 'software', 'system', 'tool', 'website', 'online', 'digital']
+    edu_terms = ['learn', 'teach', 'educat', 'school', 'class', 'student', 'course']
+    
+    has_tech = any(term in text_lower for term in tech_terms)
+    has_edu = any(term in text_lower for term in edu_terms)
+    
+    return has_tech and has_edu
+
+# Function to generate insights based on text and sentiment
+def generate_insights(text, sentiment, score):
+    insights = []
+    
+    # Extract key phrases
+    processed_text = preprocess_text(text)
+    
+    # Check for edtech keywords in text
+    sentiment_keywords = {
+        'positive': [],
+        'negative': [],
+        'neutral': []
+    }
+    
+    for category in sentiment_keywords:
+        for keyword in edtech_keywords[category]:
+            if keyword in processed_text:
+                sentiment_keywords[category].append(keyword)
+    
+    # Generate basic insight about sentiment
+    if sentiment == 'positive':
+        insights.append(f"The feedback expresses overall satisfaction with the educational technology.")
+        if sentiment_keywords['positive']:
+            insights.append(f"Positive aspects mentioned: {', '.join(sentiment_keywords['positive'][:3])}.")
+    elif sentiment == 'negative':
+        insights.append(f"The feedback indicates dissatisfaction with the educational technology.")
+        if sentiment_keywords['negative']:
+            insights.append(f"Areas for improvement: {', '.join(sentiment_keywords['negative'][:3])}.")
+    else:
+        insights.append("The feedback is predominantly neutral in tone.")
+    
+    # Add context-specific insights
+    if 'user interface' in text.lower() or 'ui' in text.lower():
+        insights.append("The feedback addresses user interface aspects of the tool.")
+    
+    if 'content' in text.lower() or 'material' in text.lower():
+        insights.append("The feedback discusses educational content quality.")
+    
+    if 'access' in text.lower() or 'available' in text.lower():
+        insights.append("Accessibility of the technology is mentioned in the feedback.")
+    
+    # Ensure we have at least 3 insights
+    if len(insights) < 3:
+        if 'learning' in text.lower() or 'education' in text.lower():
+            insights.append("The feedback relates to learning effectiveness of the technology.")
+        
+        if 'feature' in text.lower() or 'function' in text.lower():
+            insights.append("Specific features or functionality are discussed in the feedback.")
+            
+        if 'support' in text.lower() or 'help' in text.lower():
+            insights.append("Support resources or help functionality is mentioned.")
+            
+    return insights[:4]  # Limit to 4 insights maximum
+
+# Function to generate recommendation based on sentiment
+def generate_recommendation(sentiment, score, text):
+    if sentiment == 'positive':
+        if score > 0.75:
+            rec = "This highly positive feedback suggests features that work well. Consider highlighting these aspects in marketing materials and maintaining these strengths in future updates."
+        else:
+            rec = "The positive sentiment indicates user satisfaction. Consider identifying and expanding upon the positively received features."
+    elif sentiment == 'negative':
+        if score > 0.75:
+            rec = "This strongly negative feedback requires immediate attention. Analyze specific pain points mentioned and prioritize addressing these issues in the next update."
+        else:
+            rec = "The negative feedback highlights areas for improvement. Consider usability testing to better understand and address the user's concerns."
+    else:  # neutral
+        if "suggestion" in text.lower() or "improve" in text.lower():
+            rec = "While the feedback is neutral, it contains suggestions to consider. Evaluate these recommendations to potentially enhance user experience."
+        else:
+            rec = "The neutral feedback provides observations without strong sentiment. Monitor similar feedback to identify potential trends worth addressing."
+            
+    return rec
+
+@app.route('/analyze', methods=['POST', 'OPTIONS'])
+def analyze_feedback():
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        return response
+    
+    # Get JSON data
+    try:
+        data = request.get_json(force=True)
+        logger.info("Received analyze request")
+    except Exception as e:
+        logger.error(f"Error parsing JSON: {str(e)}")
+        return jsonify({'error': 'Invalid JSON data'}), 400
+    
+    if not data or 'text' not in data:
+        logger.warning("No text provided in request")
+        return jsonify({'error': 'No text provided for analysis'}), 400
+    
+    text = data['text']
+    
+    # Check if the text is related to educational technology
+    edtech_related = is_edtech_related(text)
+    
+    # Analyze sentiment
+    try:
+        sentiment_scores = sia.polarity_scores(text)
+    except Exception as e:
+        logger.error(f"Error analyzing sentiment: {str(e)}")
+        # Provide default scores instead of failing
+        sentiment_scores = {'compound': 0, 'pos': 0, 'neg': 0, 'neu': 1}
+    
+    # Determine sentiment category and confidence
+    compound_score = sentiment_scores['compound']
+    
+    if compound_score >= 0.05:
+        sentiment = 'positive'
+        confidence = min(abs(compound_score) * 1.5, 0.99)  # Adjust confidence based on score
+    elif compound_score <= -0.05:
+        sentiment = 'negative'
+        confidence = min(abs(compound_score) * 1.5, 0.99)
+    else:
+        sentiment = 'neutral'
+        # For neutral sentiment, confidence is highest when compound is closest to 0
+        confidence = 1 - min(abs(compound_score) * 10, 0.5)
+    
+    # Generate insights
+    try:
+        insights = generate_insights(text, sentiment, confidence)
+    except Exception as e:
+        logger.error(f"Error generating insights: {str(e)}")
+        insights = ["Unable to generate detailed insights for this feedback."]
+    
+    # Generate recommendation
+    try:
+        recommendation = generate_recommendation(sentiment, confidence, text)
+    except Exception as e:
+        logger.error(f"Error generating recommendation: {str(e)}")
+        recommendation = "Consider reviewing this feedback manually for actionable insights."
+    
+    # Prepare response
+    response = {
+        'sentiment': sentiment,
+        'confidence': confidence,
+        'insights': insights,
+        'recommendation': recommendation,
+        'edtech_relevant': edtech_related
+    }
+    
+    # Return JSON response
+    return jsonify(response)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok', 'message': 'Server is running'})
+
+if _name_ == '_main_':
+    app.run(host='0.0.0.0', port=5000, debug=True)
